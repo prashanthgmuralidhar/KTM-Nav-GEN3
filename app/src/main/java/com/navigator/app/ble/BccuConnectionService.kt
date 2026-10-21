@@ -281,8 +281,11 @@ class BccuConnectionService : LifecycleService() {
                 }
             }
             val f = android.content.IntentFilter("com.navigator.app.DEBUG_RCM")
-            if (Build.VERSION.SDK_INT >= 33) registerReceiver(r, f, Context.RECEIVER_EXPORTED)
-            else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(r, f)
+            // DUMP is held by `adb shell` but not grantable to apps, so other
+            // installed apps can't fake button presses (e.g. answer a call).
+            val senderPermission = android.Manifest.permission.DUMP
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(r, f, senderPermission, null, Context.RECEIVER_EXPORTED)
+            else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(r, f, senderPermission, null)
         }
     }
 

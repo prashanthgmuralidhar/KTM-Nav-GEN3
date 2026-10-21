@@ -87,7 +87,7 @@ class NotificationReader(private val context: Context) {
     }
 
     private fun say(engine: TextToSpeech, text: String) {
-        AppLogger.log("TTS", "Reading: \"$text\"")
+        AppLogger.log("TTS", "Reading aloud (${text.length} chars)")
         audio?.requestAudioFocus(focusRequest)
         engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, "latest-notification")
     }
