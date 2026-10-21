@@ -898,19 +898,30 @@ class BccuConnectionService : LifecycleService() {
 
         when {
             cmd == BccuProtocol.CMD_HELLO -> {
-                // Always echo HELLO back. Field logs proved this dash decides
-                // whether to show its "confirm pairing" prompt entirely from its
-                // own bond memory - not from which command we reply. Echoing
-                // HELLO is the ONLY reply it acts on: to a bonded dash it answers
-                // with GENERATE_KEYS in a few seconds and no prompt; to a genuinely
-                // new device it prompts and answers once the rider confirms (~30s).
-                // The old "known bike -> reply GENERATE_KEYS to skip the prompt"
-                // shortcut was silently ignored by the dash, stalling every single
-                // reconnect and (via the recovery) forcing a spurious re-pair.
+                // Known bike with a persisted key pool: reply GENERATE_KEYS with
+                // that pool loaded, so the dash key-selects from it and resumes
+                // silently (field-verified in the v0.3.0-beta release build; a
+                // Duke 250 treats a HELLO echo as a new phone and demands the
+                // pairing menu). The shortcut only stalled when the app-side pool
+                // was empty. If a handshake already stalled this cycle, fall back
+                // to echoing HELLO and let the dash decide whether to prompt.
                 val address = currentDeviceAddress
-                val known = address != null && AppSettings(this@BccuConnectionService).hasPairedBefore(address)
-                AppLogger.log("Auth", "cmd=HELLO (${if (known) "known" else "new"} bike $address) - echoing HELLO; dash decides whether to prompt")
-                replyControl(BccuProtocol.CMD_HELLO)
+                val settings = AppSettings(this@BccuConnectionService)
+                val known = address != null && settings.hasPairedBefore(address)
+                val pool = address?.let { settings.loadSessionKeys(it) }
+                if (known && pool != null && handshakeRecoveries == 0) {
+                    sessionKeys = pool
+                    AppLogger.log("Auth", "cmd=HELLO (known bike $address) - have persisted key pool, replying GENERATE_KEYS for silent reconnect")
+                    replyControl(BccuProtocol.CMD_GENERATE_KEYS)
+                } else {
+                    val why = when {
+                        !known -> "new"
+                        pool == null -> "known, no stored pool"
+                        else -> "known, retrying after stall"
+                    }
+                    AppLogger.log("Auth", "cmd=HELLO ($why bike $address) - echoing HELLO; dash decides whether to prompt")
+                    replyControl(BccuProtocol.CMD_HELLO)
+                }
             }
             cmd == BccuProtocol.CMD_GENERATE_KEYS -> {
                 AppLogger.log("Auth", "cmd=GENERATE_KEYS, deriving session keys")
