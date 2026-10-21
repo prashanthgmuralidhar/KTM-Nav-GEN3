@@ -101,7 +101,6 @@ fun SettingsScreen(
     var preferredAudioAddress by remember { mutableStateOf(settings.preferredCallAudioDeviceAddress) }
     var mirrorEnabled by remember { mutableStateOf(settings.mirrorEnabled) }
     var marqueeEnabled by remember { mutableStateOf(settings.marqueeEnabled) }
-    var gamepadEnabled by remember { mutableStateOf(settings.gamepadEnabled) }
     var geminiModel by remember { mutableStateOf(settings.geminiModel) }
     var turnBeepEnabled by remember { mutableStateOf(settings.turnBeepEnabled) }
     var beepVolume by remember { mutableStateOf(settings.beepVolumePercent) }
@@ -112,9 +111,7 @@ fun SettingsScreen(
     var overspeedLimit by remember { mutableStateOf(settings.overspeedLimitKmh) }
     var routeRecordEnabled by remember { mutableStateOf(settings.routeAutoRecordEnabled) }
     var waypoint by remember { mutableStateOf(settings.waypoint) }
-    var accessibilityGranted by remember {
-        mutableStateOf(com.navigator.app.controller.RemoteControlAccessibilityService.isRunning)
-    }
+    var overlayGranted by remember { mutableStateOf(AndroidSettings.canDrawOverlays(context)) }
     var dialog by remember { mutableStateOf(SettingsDialog.NONE) }
 
     val installedApps = remember {
@@ -138,7 +135,7 @@ fun SettingsScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 notificationAccessGranted =
                     NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
-                accessibilityGranted = com.navigator.app.controller.RemoteControlAccessibilityService.isRunning
+                overlayGranted = AndroidSettings.canDrawOverlays(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -485,39 +482,34 @@ fun SettingsScreen(
                 }
             }
 
-            // ===== Handlebar gamepad =====
+            // ===== Handlebar remote =====
             item {
-                GroupCard("Handlebar gamepad") {
-                    SettingsRow("Control any app with the remote", showDivider = true) {
-                        KtmToggle(gamepadEnabled, { on ->
-                            gamepadEnabled = on
-                            settings.gamepadEnabled = on
-                            // remoteMode is what the button pipeline actually gates
-                            // on - without setting it this toggle did nothing (and
-                            // couldn't turn gamepad mode OFF once the handlebar
-                            // overlay had enabled it).
-                            settings.remoteMode = if (on) AppSettings.MODE_GAMEPAD else AppSettings.MODE_MEDIA
-                            // Turning it on with the service not yet enabled: send
-                            // the rider straight to the accessibility settings.
-                            if (on && !accessibilityGranted) {
-                                context.startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS))
-                            }
-                        })
-                    }
+                GroupCard("Handlebar remote") {
                     SettingsRow(
-                        "Accessibility service", showDivider = true,
-                        onClick = { context.startActivity(Intent(AndroidSettings.ACTION_ACCESSIBILITY_SETTINGS)) },
+                        "Display over other apps", showDivider = true,
+                        onClick = {
+                            context.startActivity(
+                                Intent(
+                                    AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:${context.packageName}"),
+                                )
+                            )
+                        },
                     ) {
                         MonoValue(
-                            if (accessibilityGranted) "Enabled" else "Enable ›",
-                            color = if (accessibilityGranted) Ktm.Green else Ktm.Orange,
+                            if (overlayGranted) "Allowed" else "Allow ›",
+                            color = if (overlayGranted) Ktm.Green else Ktm.Orange,
                         )
                     }
-                    SettingsRow("How it works", showDivider = false) {
-                        Text(
-                            "Up/Down move · Set taps · Back",
-                            color = Ktm.Dim, fontFamily = BarlowCondensed, fontSize = 12.sp,
-                        )
+                    SettingsRow("Hold Back on the dash to hand buttons to the phone", showDivider = true) {}
+                    SettingsRow("Up / Down", showDivider = true) {
+                        RemoteHint("Volume · hold: Assistant / Maps")
+                    }
+                    SettingsRow("Set", showDivider = true) {
+                        RemoteHint("Play/pause · answer call")
+                    }
+                    SettingsRow("Back", showDivider = false) {
+                        RemoteHint("Next · double: previous · reject call")
                     }
                 }
             }
@@ -786,4 +778,9 @@ private fun <T> MultiChoiceDialog(
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("DONE", color = Ktm.Orange) } },
     )
+}
+
+@Composable
+private fun RemoteHint(text: String) {
+    Text(text, color = Ktm.Dim, fontFamily = BarlowCondensed, fontSize = 12.sp)
 }

@@ -53,6 +53,24 @@ class CallStateMonitor(
     }
 
     /**
+     * Declines the ringing call with [TelecomManager.endCall] (needs
+     * ANSWER_PHONE_CALLS; deprecated since API 29 and may be refused on some
+     * builds), silencing the ringer if that doesn't work.
+     */
+    fun reject() {
+        val telecomManager = context.getSystemService(TelecomManager::class.java)
+        val ended = try {
+            @Suppress("DEPRECATION")
+            telecomManager?.endCall() == true
+        } catch (e: SecurityException) {
+            AppLogger.log("Call", "endCall() denied (${e.message})")
+            false
+        }
+        AppLogger.log("Call", "Reject via endCall(): ${if (ended) "ok" else "refused"}")
+        if (!ended) silenceRinger()
+    }
+
+    /**
      * Best-effort only - see class doc. Silences the currently-ringing call
      * rather than truly rejecting it.
      *

@@ -158,29 +158,8 @@ class MainActivity : ComponentActivity() {
             callStateMonitor.start()
         }
 
-        // Drive the state machine from RCM button events. EXCEPTION: when the
-        // handlebar-gamepad is enabled AND OpenDash is in the background, the
-        // buttons belong to the accessibility gamepad (to control other apps) —
-        // so we must NOT also feed them to the media/menu state machine, or media
-        // would swallow Up/Down/Set and only Back would appear to work.
-        lifecycleScope.launch {
-            BccuConnectionService.buttonEvents.collect { button ->
-                try {
-                    val gamepadOwnsIt = settings.remoteMode == AppSettings.MODE_GAMEPAD &&
-                        !AppForegroundState.isForeground &&
-                        com.navigator.app.controller.RemoteControlAccessibilityService.isRunning
-                    if (gamepadOwnsIt) {
-                        AppLogger.log("Controller", "Button=$button -> gamepad mode (accessibility owns it)")
-                        return@collect
-                    }
-                    AppLogger.log("Controller", "Button=$button screen=${stateMachine.screen} callRinging=${stateMachine.isCallRinging}")
-                    stateMachine.onButton(button, System.currentTimeMillis(), NotificationRepository.entries.value.size)
-                    AppLogger.log("Controller", "-> screen=${stateMachine.screen} gridSelection=${stateMachine.gridSelection}")
-                } catch (e: Exception) {
-                    AppLogger.log("Controller", "!! Handling button=$button threw: $e")
-                }
-            }
-        }
+        // Handlebar buttons are handled by HandlebarRemote in the connection
+        // service; the state machine here is driven only by the on-screen pad.
         // Inactivity watchdog tick.
         lifecycleScope.launch {
             while (true) {

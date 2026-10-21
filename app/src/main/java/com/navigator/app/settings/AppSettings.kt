@@ -119,27 +119,6 @@ class AppSettings(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_MARQUEE_ENABLED, value).apply()
 
     /**
-     * When on, the handlebar remote acts as a system-wide gamepad: while any
-     * OTHER app is in front, UP/DOWN move focus, SET clicks, BACK goes back -
-     * driven through the accessibility service. When OpenDash itself is in
-     * front, the remote drives OpenDash's own UI as before. Requires the user to
-     * enable OpenDash's accessibility service in Android Settings.
-     */
-    var gamepadEnabled: Boolean
-        get() = pairingPrefs.getBoolean(KEY_GAMEPAD_ENABLED, false)
-        set(value) = pairingPrefs.edit().putBoolean(KEY_GAMEPAD_ENABLED, value).apply()
-
-    /**
-     * What the handlebar remote does with its buttons: [MODE_MEDIA] (play/pause,
-     * next/prev), [MODE_GAMEPAD] (navigate other phone apps via accessibility),
-     * or [MODE_DASH] (open/drive Navigator Gen3's own menu). Triple-press Up on
-     * the remote pops an overlay to switch. Default: media.
-     */
-    var remoteMode: String
-        get() = pairingPrefs.getString(KEY_REMOTE_MODE, MODE_MEDIA) ?: MODE_MEDIA
-        set(value) = pairingPrefs.edit().putString(KEY_REMOTE_MODE, value).apply()
-
-    /**
      * Whether we've ever completed the BCCU handshake with this bike before.
      * The bike decides whether to show its physical "confirm new pairing"
      * prompt from its own bond memory (see the HELLO handling in
@@ -342,11 +321,6 @@ class AppSettings(context: Context) {
         private const val KEY_CALL_AUDIO_DEVICE = "call_audio_device"
         private const val KEY_MIRROR_ENABLED = "mirror_enabled"
         private const val KEY_MARQUEE_ENABLED = "marquee_enabled"
-        private const val KEY_GAMEPAD_ENABLED = "gamepad_enabled"
-        private const val KEY_REMOTE_MODE = "remote_mode"
-        const val MODE_MEDIA = "media"
-        const val MODE_GAMEPAD = "gamepad"
-        const val MODE_DASH = "dash"
         private const val KEY_TURN_BEEP = "turn_beep_enabled"
         private const val KEY_BEEP_VOLUME = "beep_volume_percent"
         const val DEFAULT_BEEP_VOLUME = 35
