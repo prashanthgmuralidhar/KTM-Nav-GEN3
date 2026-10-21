@@ -53,7 +53,8 @@ class AppNotificationListener : NotificationListenerService() {
 
         if (isNav) {
             val navText = if (title.isNotBlank()) "$title $text" else text
-            AppLogger.log("Notif", "Nav update from $packageName: distance=${redact(title)} road=${redact(text)}")
+            val fields = NavNotificationParser.parse(extras)
+            AppLogger.log("Notif", "Nav update from $packageName: distance=${redact(fields.distance.orEmpty())} instruction=${redact(fields.instruction.orEmpty())}")
             // Dump every extras key so we can see, from real logs, exactly which
             // field carries ETA/duration/remaining-distance - no guessing which
             // Android notification extra Google Maps uses for that subtitle line.
@@ -67,17 +68,16 @@ class AppNotificationListener : NotificationListenerService() {
             }
             NotificationRepository.updateNavText(packageName, navText)
             val subText = extras.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString().orEmpty()
-            val (etaText, remainingDistanceText) = parseEtaAndRemainingDistance(subText)
-            // title/text line up with the official app's own field split:
-            // e.g. title="110 m" (TURN_DISTANCE), text="towards 1st Cross Rd" (TURN_ROAD).
+            val (etaText, subTextDistance) = parseEtaAndRemainingDistance(subText)
+            val remainingDistanceText = subTextDistance ?: fields.remaining
             BccuConnectionService.sendGuidanceIfRunning(
-                title.ifBlank { null },
-                text.ifBlank { null },
+                fields.distance,
+                fields.instruction?.let { NavNotificationParser.compactForDash(it) },
                 etaText,
                 remainingDistanceText
             )
-            captureManeuverIconIfEnabled(sbn, title, text)
-            val guessedIcon = TurnIconHeuristic.guessDirection(this, sbn)
+            captureManeuverIconIfEnabled(sbn, title, fields.instruction.orEmpty())
+            val guessedIcon = TurnIconHeuristic.guessDirection(this, sbn, fields.instruction)
             guessedIcon?.let { BccuConnectionService.sendTurnIconIfRunning(it) }
             // Stereo approach beeps: left ear = left turn, right ear = right turn,
             // faster pattern as the distance (the notification title) shrinks.
@@ -88,12 +88,12 @@ class AppNotificationListener : NotificationListenerService() {
                 com.navigator.app.audio.TurnBeeper.volumePercent = settings.beepVolumePercent
                 com.navigator.app.audio.TurnBeeper.gpsSpeedKmh = com.navigator.app.location.SpeedMonitor.speedKmh.value
                 com.navigator.app.audio.TurnBeeper.engineOn = com.navigator.app.sensors.VibrationMonitor.engineOn.value
-                com.navigator.app.audio.TurnBeeper.onGuidance(title.ifBlank { null }, guessedIcon, text.ifBlank { null })
+                com.navigator.app.audio.TurnBeeper.onGuidance(fields.distance?.ifBlank { null }, guessedIcon, fields.instruction)
             }
             NotificationRepository.updateNavGuidance(
                 NotificationRepository.NavGuidance(
-                    distance = title.ifBlank { null },
-                    road = text.ifBlank { null },
+                    distance = fields.distance?.ifBlank { null },
+                    road = fields.instruction,
                     eta = etaText,
                     remaining = remainingDistanceText,
                     maneuver = maneuverTextFor(guessedIcon),

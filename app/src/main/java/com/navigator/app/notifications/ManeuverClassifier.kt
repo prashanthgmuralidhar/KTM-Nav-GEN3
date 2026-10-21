@@ -2,8 +2,6 @@ package com.navigator.app.notifications
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color
 import com.navigator.app.R
 import com.navigator.app.ble.BccuProtocol
 import com.navigator.app.logging.AppLogger
@@ -19,9 +17,9 @@ import java.nio.ByteOrder
  * (including every roundabout exit, which the heuristic could never tell apart)
  * are classified robustly.
  *
- * Pipeline (identical to the reference app so the bundled model behaves the
- * same): composite the icon onto a black background, scale to 96x96, feed RGB
- * floats [0,1], run the model, take the arg-max class; accept it only if its
+ * Pipeline (matching the training script): take the icon's alpha channel as a
+ * white glyph on black, scale to 96x96, feed RGB floats [0,1], run the model,
+ * take the arg-max class; accept it only if its
  * confidence is >= [CONFIDENCE]. The 34 output classes are the dash turn-icon
  * binary codes (plus three named fall-backs), so a numeric label maps straight
  * to [BccuProtocol.TurnIcon.fromBinary].
@@ -123,25 +121,24 @@ object ManeuverClassifier {
         return if (n != null) BccuProtocol.TurnIcon.fromBinary(n) else NAMED[label]
     }
 
-    /** Composite onto black, scale to 96x96, emit RGB floats [0,1] - matches the reference app byte-for-byte. */
+    /**
+     * Scale to 96x96 and emit the alpha channel as white-on-black RGB floats
+     * [0,1], exactly what ml/train_maneuver_model.py trains on. Using alpha
+     * (not RGB) matters: Google Maps tints its maneuver icon black
+     * (tint=0xff000000), which composited onto black is an all-black input.
+     */
     private fun preprocess(bitmap: Bitmap): ByteBuffer {
-        val onBlack = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(onBlack)
-        canvas.drawColor(Color.BLACK)
-        canvas.drawBitmap(bitmap, 0f, 0f, null)
-        val scaled = Bitmap.createScaledBitmap(onBlack, INPUT, INPUT, true)
+        val scaled = if (bitmap.width == INPUT && bitmap.height == INPUT) bitmap
+            else Bitmap.createScaledBitmap(bitmap, INPUT, INPUT, true)
         val buf = ByteBuffer.allocateDirect(INPUT * INPUT * 3 * 4).order(ByteOrder.nativeOrder())
         for (y in 0 until INPUT) {
             for (x in 0 until INPUT) {
-                val p = scaled.getPixel(x, y)
-                buf.putFloat(((p shr 16) and 0xFF) / 255f)
-                buf.putFloat(((p shr 8) and 0xFF) / 255f)
-                buf.putFloat((p and 0xFF) / 255f)
+                val a = ((scaled.getPixel(x, y) ushr 24) and 0xFF) / 255f
+                buf.putFloat(a); buf.putFloat(a); buf.putFloat(a)
             }
         }
         buf.rewind()
-        if (scaled != onBlack) scaled.recycle()
-        onBlack.recycle()
+        if (scaled != bitmap) scaled.recycle()
         return buf
     }
 
