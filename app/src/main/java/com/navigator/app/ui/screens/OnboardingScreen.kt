@@ -148,7 +148,7 @@ fun OnboardingScreen(settings: AppSettings, onComplete: () -> Unit) {
                         eyebrow = "Handlebar remote",
                         headline = "Control it\nfrom the bar.",
                         body = "Hold Back on the dash to hand its buttons to your phone: music, volume, " +
-                            "calls, Google Assistant and Maps — hands-free while you ride.",
+                            "calls, Google Assistant and read-aloud messages — hands-free while you ride.",
                         illustration = { RemotePreview() },
                         onContinue = { step = 3 },
                         onBack = { step = 1 },
@@ -473,8 +473,8 @@ private fun RemotePreview() {
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         RemoteRow("UP", "Volume up · hold: Assistant")
-        RemoteRow("DOWN", "Volume down · hold: Maps")
-        RemoteRow("SET", "Play / pause · answer call")
+        RemoteRow("DOWN", "Volume down · hold: now playing")
+        RemoteRow("SET", "Play / pause · hold: read message")
         RemoteRow("BACK", "Next · double: previous · reject")
     }
 }
@@ -612,7 +612,7 @@ private fun ColumnScope.PermissionsStep(
         PermissionCard(
             icon = OpenDashIcons.Navigation,
             title = "Display over other apps",
-            desc = "Lets a handlebar hold open Google Assistant or Maps while the phone is in your pocket.",
+            desc = "Lets a handlebar hold open Google Assistant while the phone is in your pocket.",
             granted = overlay,
             onGrant = {
                 context.startActivity(

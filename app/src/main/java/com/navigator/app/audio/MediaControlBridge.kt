@@ -2,6 +2,7 @@ package com.navigator.app.audio
 
 import android.content.ComponentName
 import android.content.Context
+import android.media.MediaMetadata
 import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import com.navigator.app.notifications.AppNotificationListener
@@ -38,5 +39,15 @@ class MediaControlBridge(private val context: Context) {
 
     fun previous() {
         activeController()?.transportControls?.skipToPrevious()
+    }
+
+    /** "Title - Artist" of the active session, or null if nothing is playing or it has no title. */
+    fun nowPlaying(): String? {
+        val metadata = activeController()?.metadata ?: return null
+        val title = metadata.getString(MediaMetadata.METADATA_KEY_TITLE)?.trim()
+        val artist = (metadata.getString(MediaMetadata.METADATA_KEY_ARTIST)
+            ?: metadata.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST))?.trim()
+        if (title.isNullOrEmpty()) return null
+        return if (artist.isNullOrEmpty()) title else "$title - $artist"
     }
 }

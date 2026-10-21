@@ -503,10 +503,10 @@ fun SettingsScreen(
                     }
                     SettingsRow("Hold Back on the dash to hand buttons to the phone", showDivider = true) {}
                     SettingsRow("Up / Down", showDivider = true) {
-                        RemoteHint("Volume · hold: Assistant / Maps")
+                        RemoteHint("Volume · hold: Assistant / now playing")
                     }
                     SettingsRow("Set", showDivider = true) {
-                        RemoteHint("Play/pause · answer call")
+                        RemoteHint("Play/pause · hold: read message · answer")
                     }
                     SettingsRow("Back", showDivider = false) {
                         RemoteHint("Next · double: previous · reject call")

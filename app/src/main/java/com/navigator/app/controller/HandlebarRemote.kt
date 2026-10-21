@@ -5,36 +5,35 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioManager
-import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import androidx.core.content.ContextCompat
 import com.navigator.app.audio.CallAudioRouter
 import com.navigator.app.audio.MediaControlBridge
+import com.navigator.app.audio.NotificationReader
+import com.navigator.app.ble.BccuConnectionService
 import com.navigator.app.ble.BccuProtocol.HandlebarButton
 import com.navigator.app.logging.AppLogger
-import com.navigator.app.notifications.NotificationRepository
-import com.navigator.app.settings.AppSettings
 import com.navigator.app.telephony.CallStateMonitor
 
 /**
- * The handlebar remote: music controls plus Google Assistant, Maps and call
- * answering. Buttons only reach the phone while the dash's own remote-control
+ * The handlebar remote: music controls plus Google Assistant, a now-playing
+ * peek on the dash, read-aloud messages and call answering. Buttons only reach the phone while the dash's own remote-control
  * mode is on (the rider holds Back on the dash to toggle it); holding Back is
  * consumed by the dash and never arrives here.
  *
  * | Button | Tap         | Double-tap     | Hold             |
  * |--------|-------------|----------------|------------------|
  * | Up     | volume up   | -              | Google Assistant |
- * | Down   | volume down | -              | open Maps        |
- * | Set    | play/pause  | -              | -                |
+ * | Down   | volume down | -              | track on dash 5s |
+ * | Set    | play/pause  | -              | read last message|
  * | Back   | next track  | previous track | (dash)           |
  *
  * While the phone rings, Set answers and Back rejects, both on release.
  *
- * Opening Assistant or Maps from the background needs "Display over other
- * apps" (Android's background-activity-start exemption).
+ * Opening Assistant from the background needs "Display over other apps"
+ * (Android's background-activity-start exemption).
  *
  * Must be created and driven on the main thread.
  */
@@ -43,6 +42,7 @@ class HandlebarRemote(private val context: Context) {
     private val handler = Handler(Looper.getMainLooper())
     private val media = MediaControlBridge(context)
     private val callAudioRouter = CallAudioRouter(context)
+    private val reader = NotificationReader(context)
     private var callMonitor: CallStateMonitor? = null
     @Volatile private var ringing = false
     private var remoteActive = false
@@ -70,6 +70,7 @@ class HandlebarRemote(private val context: Context) {
 
     fun destroy() {
         recognizer.cancelPending()
+        reader.shutdown()
         callMonitor?.stop()
         callMonitor = null
     }
@@ -99,8 +100,10 @@ class HandlebarRemote(private val context: Context) {
             HandlebarButton.UP to GestureKind.SINGLE -> adjustVolume(raise = true)
             HandlebarButton.DOWN to GestureKind.SINGLE -> adjustVolume(raise = false)
             HandlebarButton.UP to GestureKind.LONG -> openAssistant()
-            HandlebarButton.DOWN to GestureKind.LONG -> openMaps()
+            HandlebarButton.DOWN to GestureKind.LONG ->
+                BccuConnectionService.showMediaPeekIfRunning(media.nowPlaying() ?: "Nothing playing")
             HandlebarButton.SET to GestureKind.SINGLE -> media.playPause()
+            HandlebarButton.SET to GestureKind.LONG -> reader.readLatest()
             HandlebarButton.BACK to GestureKind.SINGLE -> media.next()
             HandlebarButton.BACK to GestureKind.DOUBLE -> media.previous()
             else -> {}
@@ -118,15 +121,6 @@ class HandlebarRemote(private val context: Context) {
 
     private fun openAssistant() {
         launch("Assistant", Intent(Intent.ACTION_VOICE_COMMAND))
-    }
-
-    private fun openMaps() {
-        val pkg = NotificationRepository.currentNavPackage.value
-            ?: AppSettings(context).navAppOverride
-            ?: "com.google.android.apps.maps"
-        val intent = context.packageManager.getLaunchIntentForPackage(pkg)
-            ?: Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q="))
-        launch("Maps", intent)
     }
 
     private fun launch(what: String, intent: Intent) {

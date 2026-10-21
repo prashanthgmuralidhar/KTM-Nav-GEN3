@@ -100,6 +100,7 @@ class BccuConnectionService : LifecycleService() {
          */
         private const val STUCK_BACKGROUND_MS = 600_000L
         const val EXTRA_DEVICE_ADDRESS = "device_address"
+        private const val MEDIA_PEEK_MS = 5_000L
 
         private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
         val connectionState: StateFlow<ConnectionState> = _connectionState
@@ -168,6 +169,11 @@ class BccuConnectionService : LifecycleService() {
         /** Broadcast the running MainActivity listens for to finish its task on notification-exit. */
         const val ACTION_FINISH_ACTIVITY = "com.navigator.app.action.FINISH_ACTIVITY"
 
+        /** Show [text] on the guidance lines for [MEDIA_PEEK_MS], then put the nav back. */
+        fun showMediaPeekIfRunning(text: String) {
+            runningInstance?.showMediaPeek(text)
+        }
+
         fun sendTurnIconIfRunning(icon: BccuProtocol.TurnIcon) {
             runningInstance?.sendTurnIcon(icon)
         }
@@ -198,6 +204,13 @@ class BccuConnectionService : LifecycleService() {
     private var clearJob: Job? = null
     private var marqueeJob: Job? = null
     private var guidanceClearJob: Job? = null
+    // Last guidance written to the dash, so a media peek can restore it. Nav
+    // updates that arrive mid-peek only update these.
+    private var shownTurnIcon: BccuProtocol.TurnIcon? = null
+    private var shownDistance: String? = null
+    private var shownRoad: String? = null
+    private var mediaPeekJob: Job? = null
+    private val mediaPeeking get() = mediaPeekJob?.isActive == true
     private var lastNotificationIcon: BccuProtocol.NotificationIcon = BccuProtocol.NotificationIcon.NOTIFICATION_WAYPOINT
     private var rssiJob: Job? = null
     private var reconnectWatchdogJob: Job? = null
@@ -1063,6 +1076,8 @@ class BccuConnectionService : LifecycleService() {
             AppLogger.log("Dash", "!! Cannot send TURN_ICON - not authenticated yet")
             return
         }
+        shownTurnIcon = icon
+        if (mediaPeeking) return
         AppLogger.log("Dash", "Sending TURN_ICON = ${icon.name}")
         val payload = BccuProtocol.buildTurnIconPayload(icon, visibility)
         writeCharacteristic(BccuProtocol.TURN_ICON, BccuCrypto.encryptData(payload, key, iv), coalesce = true)
@@ -1235,15 +1250,12 @@ class BccuConnectionService : LifecycleService() {
         // A fresh guidance update means navigation is still active; cancel any
         // pending "nav ended" clear that a transient notification-remove queued.
         guidanceClearJob?.cancel()
-        if (distanceText != null) {
-            AppLogger.log("Dash", "Sending TURN_DISTANCE = \"$distanceText\"")
-            val payload = BccuProtocol.buildTurnDistancePayload(distanceText)
-            writeCharacteristic(BccuProtocol.TURN_DISTANCE, BccuCrypto.encryptData(payload, key, iv), coalesce = true)
-        }
-        if (roadText != null) {
-            AppLogger.log("Dash", "Sending TURN_ROAD = \"$roadText\"")
-            val payload = BccuProtocol.buildTurnRoadPayload(roadText)
-            writeCharacteristic(BccuProtocol.TURN_ROAD, BccuCrypto.encryptData(payload, key, iv), coalesce = true)
+        if (distanceText != null) shownDistance = distanceText
+        if (roadText != null) shownRoad = roadText
+        if (mediaPeeking) {
+            AppLogger.log("Dash", "Media peek on screen - holding back TURN_DISTANCE/TURN_ROAD")
+        } else {
+            writeGuidanceLines(distanceText, roadText, key, iv)
         }
         if (etaText != null) {
             AppLogger.log("Dash", "Sending ETA = \"$etaText\"")
@@ -1255,6 +1267,56 @@ class BccuConnectionService : LifecycleService() {
             val payload = BccuProtocol.buildRemainingDistancePayload(remainingDistanceText)
             writeCharacteristic(BccuProtocol.REMAINING_DISTANCE, BccuCrypto.encryptData(payload, key, iv), coalesce = true)
         }
+    }
+
+    private fun writeGuidanceLines(distanceText: String?, roadText: String?, key: ByteArray, iv: ByteArray) {
+        if (distanceText != null) {
+            AppLogger.log("Dash", "Sending TURN_DISTANCE = \"$distanceText\"")
+            val payload = BccuProtocol.buildTurnDistancePayload(distanceText)
+            writeCharacteristic(BccuProtocol.TURN_DISTANCE, BccuCrypto.encryptData(payload, key, iv), coalesce = true)
+        }
+        if (roadText != null) {
+            AppLogger.log("Dash", "Sending TURN_ROAD = \"$roadText\"")
+            val payload = BccuProtocol.buildTurnRoadPayload(roadText)
+            writeCharacteristic(BccuProtocol.TURN_ROAD, BccuCrypto.encryptData(payload, key, iv), coalesce = true)
+        }
+    }
+
+    /**
+     * Put [text] (e.g. "Song - Artist") on the road line with "MUSIC" in the
+     * distance slot and the turn icon hidden, then after [MEDIA_PEEK_MS]
+     * re-send the latest guidance (or blank those fields if there is none).
+     */
+    fun showMediaPeek(text: String) {
+        val key = activeSessionKey ?: return
+        val iv = tempIv ?: return
+        AppLogger.log("Dash", "Media peek: \"$text\"")
+        mediaPeekJob?.cancel()
+        writeCharacteristic(BccuProtocol.TURN_ICON,
+            BccuCrypto.encryptData(BccuProtocol.buildTurnIconPayload(BccuProtocol.TurnIcon.UNDEFINED, BccuProtocol.Visibility.OFF), key, iv), coalesce = true)
+        writeGuidanceLines("MUSIC", text, key, iv)
+        mediaPeekJob = lifecycleScope.launch {
+            delay(MEDIA_PEEK_MS)
+            restoreAfterMediaPeek()
+        }
+    }
+
+    private fun restoreAfterMediaPeek() {
+        val key = activeSessionKey ?: return
+        val iv = tempIv ?: return
+        val icon = shownTurnIcon
+        if (icon == null && shownDistance == null && shownRoad == null) {
+            AppLogger.log("Dash", "Media peek over - no guidance to restore, blanking")
+            val off = BccuProtocol.Visibility.OFF
+            writeCharacteristic(BccuProtocol.TURN_DISTANCE,
+                BccuCrypto.encryptData(BccuProtocol.buildTurnDistancePayload("", off), key, iv), coalesce = true)
+            writeCharacteristic(BccuProtocol.TURN_ROAD,
+                BccuCrypto.encryptData(BccuProtocol.buildTurnRoadPayload("", off), key, iv), coalesce = true)
+            return
+        }
+        AppLogger.log("Dash", "Media peek over - restoring guidance")
+        if (icon != null) sendTurnIcon(icon)
+        writeGuidanceLines(shownDistance ?: "", shownRoad ?: "", key, iv)
     }
 
     /**
@@ -1282,6 +1344,8 @@ class BccuConnectionService : LifecycleService() {
         // Navigation genuinely ended (this call is debounced past Maps' routine
         // remove+repost) - let the next route's first approach beep fire again.
         com.navigator.app.audio.TurnBeeper.reset()
+        shownTurnIcon = null; shownDistance = null; shownRoad = null
+        mediaPeekJob?.cancel(); mediaPeekJob = null
         val key = activeSessionKey ?: return
         val iv = tempIv ?: return
         AppLogger.log("Dash", "Clearing center guidance (navigation ended)")
