@@ -27,6 +27,7 @@ class HandlebarGestureRecognizer(
     private val supportsDouble: (HandlebarButton) -> Boolean,
     private val schedule: (delayMs: Long, block: () -> Unit) -> () -> Unit,
     private val emit: (RemoteGesture) -> Unit,
+    private val onPress: (HandlebarButton) -> Unit = {},
 ) {
     companion object {
         // Measured on real hardware by the v0.3.0-beta release build.
@@ -65,6 +66,7 @@ class HandlebarGestureRecognizer(
             val now = (mask shr button.bitIndex) and 1 == 1
             if (!was && now) {
                 pressedAt[button] = nowMs
+                onPress(button)
             } else if (was && !now) {
                 val held = pressedAt.remove(button)?.let { nowMs - it } ?: 0L
                 onRelease(button, held)

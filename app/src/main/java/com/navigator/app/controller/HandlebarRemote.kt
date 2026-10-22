@@ -58,6 +58,7 @@ class HandlebarRemote(private val context: Context) {
             ({ handler.removeCallbacks(r) })
         },
         emit = ::onGesture,
+        onPress = { RemoteChime.tick(context) },
     )
 
     /** Feed one decoded RCM notification: the dash's remote-control flag and the pressed-button mask. */
@@ -90,6 +91,7 @@ class HandlebarRemote(private val context: Context) {
 
     private fun onGesture(g: RemoteGesture) {
         AppLogger.log("RCM", "Gesture ${g.button} ${g.kind}${if (ringing) " (ringing)" else ""}")
+        if (g.kind == GestureKind.LONG) RemoteChime.holdTone(context)
         if (ringing) {
             when (g.button) {
                 HandlebarButton.SET -> {

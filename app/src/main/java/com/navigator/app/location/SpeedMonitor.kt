@@ -38,6 +38,7 @@ class SpeedMonitor(private val context: Context) : LocationListener {
         private const val BEEP_INTERVAL_MS = 900L
         /** Dash banner refresh while overspeeding (each update is a BLE write). */
         private const val DASH_UPDATE_MS = 2_000L
+        private const val SPEED_LOG_INTERVAL_MS = 60_000L
 
         /** Live GPS speed in km/h for any UI that wants it; null = no recent fix. */
         private val _speedKmh = MutableStateFlow<Float?>(null)
@@ -48,6 +49,9 @@ class SpeedMonitor(private val context: Context) : LocationListener {
     private var alerting = false
     private var started = false
     private var loggedFirstFix = false
+    private var maxKmhSinceLog = 0f
+    private var lastSpeedLogMs = 0L
+    private var loggedToneFailure = false
     // One long-lived ToneGenerator: creating one per beep leaks native
     // AudioTracks (finalizer-reliant) and can exhaust AudioFlinger's track cap.
     private var toneGenerator: ToneGenerator? = null
@@ -71,6 +75,11 @@ class SpeedMonitor(private val context: Context) : LocationListener {
                 val tg = toneGenerator ?: ToneGenerator(AudioManager.STREAM_ALARM, 100)
                     .also { toneGenerator = it }
                 tg.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 400)
+            }.onFailure {
+                if (!loggedToneFailure) {
+                    loggedToneFailure = true
+                    AppLogger.log("Speed", "!! Overspeed tone failed: $it")
+                }
             }
             staleHandler.postDelayed(this, BEEP_INTERVAL_MS)
         }
@@ -120,6 +129,13 @@ class SpeedMonitor(private val context: Context) : LocationListener {
         if (!loggedFirstFix) {
             loggedFirstFix = true
             AppLogger.log("Speed", "First GPS fix with speed: %.0f km/h".format(kmh))
+        }
+        maxKmhSinceLog = maxOf(maxKmhSinceLog, kmh)
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastSpeedLogMs >= SPEED_LOG_INTERVAL_MS) {
+            AppLogger.log("Speed", "Top speed last minute: %.0f km/h (limit=${settings.overspeedLimitKmh}, enabled=${settings.overspeedEnabled}, alerting=$alerting)".format(maxKmhSinceLog))
+            lastSpeedLogMs = nowMs
+            maxKmhSinceLog = 0f
         }
         _speedKmh.value = kmh
         if (!settings.overspeedEnabled) { if (alerting) clearAlert(); return }
