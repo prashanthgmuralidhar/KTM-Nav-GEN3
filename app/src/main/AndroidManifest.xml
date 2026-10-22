@@ -105,6 +105,10 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".connect.BikeSeenReceiver"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="com.navigator.app.fileprovider"

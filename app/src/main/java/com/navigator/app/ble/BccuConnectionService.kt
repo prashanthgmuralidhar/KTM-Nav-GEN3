@@ -101,6 +101,12 @@ class BccuConnectionService : LifecycleService() {
         private const val STUCK_BACKGROUND_MS = 600_000L
         const val EXTRA_DEVICE_ADDRESS = "device_address"
         private const val MEDIA_PEEK_MS = 5_000L
+        /**
+         * Bike unreachable this long (ignition off) with the app not on screen:
+         * shut the service down and leave a low-power wake scan to restart it.
+         * Long enough to ride out a fuel stop's ignition cycle without churn.
+         */
+        private const val IDLE_STOP_MS = 180_000L
 
         private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
         val connectionState: StateFlow<ConnectionState> = _connectionState
@@ -139,6 +145,7 @@ class BccuConnectionService : LifecycleService() {
         // controller state machine) can reach the running service instance
         // without binder/messenger plumbing. Null when the service isn't running.
         private var runningInstance: BccuConnectionService? = null
+        val isRunning: Boolean get() = runningInstance != null
 
         fun sendNotificationIfRunning(text: String, icon: BccuProtocol.NotificationIcon) {
             runningInstance?.sendNotification(text, icon)
@@ -249,6 +256,7 @@ class BccuConnectionService : LifecycleService() {
         createNotificationChannel()
         startForegroundWithTypes("Connecting...")
         runningInstance = this
+        com.navigator.app.connect.BikeWakeScan.disarm(this)
         startReconnectWatchdog()
         registerAdapterStateReceiver()
         speedMonitor = com.navigator.app.location.SpeedMonitor(this).also { it.start() }
@@ -385,6 +393,24 @@ class BccuConnectionService : LifecycleService() {
      * flight, and force-recycles a connection that's been stuck "connecting"
      * far too long.
      */
+    private var unlinkedSinceMs = System.currentTimeMillis()
+
+    /** Ignition is off: stop entirely (dropping the notification) and let the wake scan bring us back. */
+    private fun idleStopIfBikeGone(address: String): Boolean {
+        if (_connectionState.value == ConnectionState.AUTHENTICATED) {
+            unlinkedSinceMs = System.currentTimeMillis()
+            return false
+        }
+        val idleMs = System.currentTimeMillis() - unlinkedSinceMs
+        if (idleMs < IDLE_STOP_MS || AppForegroundState.isForeground) return false
+        if (!AppSettings(this).hasPairedBefore(address)) return false
+        AppLogger.log("BLE", "Bike unreachable for ${idleMs / 1000}s - stopping until it advertises again")
+        com.navigator.app.connect.BikeWakeScan.arm(this)
+        androidx.core.app.ServiceCompat.stopForeground(this, androidx.core.app.ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        return true
+    }
+
     private fun startReconnectWatchdog() {
         reconnectWatchdogJob?.cancel()
         reconnectWatchdogJob = lifecycleScope.launch {
@@ -392,6 +418,7 @@ class BccuConnectionService : LifecycleService() {
                 delay(RECONNECT_WATCHDOG_MS)
                 try {
                     val address = AppSettings(this@BccuConnectionService).bondedDeviceAddress ?: continue
+                    if (idleStopIfBikeGone(address)) break
                     if (_connectionState.value == ConnectionState.AUTHENTICATED) continue
                     val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
                     if (adapter == null || !adapter.isEnabled) continue
