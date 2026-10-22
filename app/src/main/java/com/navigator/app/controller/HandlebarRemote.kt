@@ -1,6 +1,7 @@
 package com.navigator.app.controller
 
 import android.Manifest
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -8,10 +9,12 @@ import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.speech.RecognizerIntent
 import androidx.core.content.ContextCompat
 import com.navigator.app.audio.CallAudioRouter
 import com.navigator.app.audio.MediaControlBridge
 import com.navigator.app.audio.NotificationReader
+import com.navigator.app.audio.RemoteChime
 import com.navigator.app.ble.BccuConnectionService
 import com.navigator.app.ble.BccuProtocol.HandlebarButton
 import com.navigator.app.logging.AppLogger
@@ -62,8 +65,10 @@ class HandlebarRemote(private val context: Context) {
         if (active != remoteActive) {
             remoteActive = active
             AppLogger.log("RCM", "Dash remote control ${if (active) "ON - buttons go to the phone" else "OFF - buttons back to the bike"}")
-            if (!active) recognizer.cancelPending()
+            if (active) recognizer.onActivated(mask, nowMs) else recognizer.cancelPending()
+            RemoteChime.play(context, entering = active)
             ensureCallMonitor()
+            return
         }
         recognizer.onMask(if (active) mask else 0, nowMs)
     }
@@ -119,16 +124,29 @@ class HandlebarRemote(private val context: Context) {
         )
     }
 
+    /**
+     * Unlocked: the normal voice-command entry point. Locked: the hands-free
+     * voice search a Bluetooth headset's long-press uses - the only voice
+     * entry point that's allowed to run over the lock screen (EXTRA_SECURE
+     * tells the assistant to restrict itself while the device is locked).
+     */
     private fun openAssistant() {
+        val keyguard = context.getSystemService(KeyguardManager::class.java)
+        if (keyguard?.isKeyguardLocked == true) {
+            val handsFree = Intent(RecognizerIntent.ACTION_VOICE_SEARCH_HANDS_FREE)
+                .putExtra(RecognizerIntent.EXTRA_SECURE, keyguard.isDeviceSecure)
+            if (launch("Assistant (locked, hands-free)", handsFree)) return
+        }
         launch("Assistant", Intent(Intent.ACTION_VOICE_COMMAND))
     }
 
-    private fun launch(what: String, intent: Intent) {
+    private fun launch(what: String, intent: Intent): Boolean {
         if (!Settings.canDrawOverlays(context)) {
             AppLogger.log("RCM", "!! $what may be blocked: 'Display over other apps' not granted (Settings > Handlebar remote)")
         }
-        runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+        return runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
             .onSuccess { AppLogger.log("RCM", "Opened $what") }
             .onFailure { AppLogger.log("RCM", "!! Opening $what failed: $it") }
+            .isSuccess
     }
 }

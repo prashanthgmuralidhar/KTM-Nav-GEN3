@@ -78,6 +78,37 @@ class HandlebarGestureRecognizerTest {
         assertEquals(emptyList<RemoteGesture>(), out)
     }
 
+    @Test fun backHeldAtActivationIsIgnored() {
+        recognizer.onActivated(bit(BACK), now)
+        advance(200)
+        recognizer.onMask(0, now)
+        advance(1000)
+        assertEquals(emptyList<RemoteGesture>(), out)
+    }
+
+    @Test fun backReportedJustAfterActivationIsIgnored() {
+        recognizer.onActivated(0, now)
+        advance(50)
+        tap(BACK, holdMs = 150)
+        advance(1000)
+        assertEquals(emptyList<RemoteGesture>(), out)
+    }
+
+    @Test fun backAfterGraceWorks() {
+        recognizer.onActivated(0, now)
+        advance(HandlebarGestureRecognizer.ACTIVATION_GRACE_MS + 10)
+        tap(BACK)
+        advance(1000)
+        assertEquals(listOf(RemoteGesture(BACK, SINGLE)), out)
+    }
+
+    @Test fun otherButtonsWorkDuringGrace() {
+        recognizer.onActivated(0, now)
+        advance(100)
+        tap(UP)
+        assertEquals(listOf(RemoteGesture(UP, SINGLE)), out)
+    }
+
     @Test fun simultaneousButtonsAreIndependent() {
         recognizer.onMask(bit(UP) or bit(SET), now)
         advance(50)

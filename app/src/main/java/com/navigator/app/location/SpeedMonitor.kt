@@ -47,6 +47,7 @@ class SpeedMonitor(private val context: Context) : LocationListener {
     private val settings = AppSettings(context)
     private var alerting = false
     private var started = false
+    private var loggedFirstFix = false
     // One long-lived ToneGenerator: creating one per beep leaks native
     // AudioTracks (finalizer-reliant) and can exhaust AudioFlinger's track cap.
     private var toneGenerator: ToneGenerator? = null
@@ -90,7 +91,12 @@ class SpeedMonitor(private val context: Context) : LocationListener {
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, this)
             started = true
             createChannel()
-            AppLogger.log("Speed", "Overspeed monitor started (limit=${settings.overspeedLimitKmh} km/h)")
+            val background = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+            AppLogger.log("Speed", "Overspeed monitor started (limit=${settings.overspeedLimitKmh} km/h, enabled=${settings.overspeedEnabled}, background location=$background)")
+            if (!background) {
+                AppLogger.log("Speed", "!! Location is not 'Allow all the time' - GPS (and overspeed alerts) stop while the phone is locked")
+            }
         } catch (e: Exception) {
             AppLogger.log("Speed", "!! requestLocationUpdates failed: $e")
         }
@@ -99,6 +105,7 @@ class SpeedMonitor(private val context: Context) : LocationListener {
     fun stop() {
         if (!started) return
         started = false
+        loggedFirstFix = false
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         runCatching { lm.removeUpdates(this) }
         clearAlert()
@@ -110,6 +117,10 @@ class SpeedMonitor(private val context: Context) : LocationListener {
     override fun onLocationChanged(location: Location) {
         if (!location.hasSpeed()) return
         val kmh = location.speed * 3.6f
+        if (!loggedFirstFix) {
+            loggedFirstFix = true
+            AppLogger.log("Speed", "First GPS fix with speed: %.0f km/h".format(kmh))
+        }
         _speedKmh.value = kmh
         if (!settings.overspeedEnabled) { if (alerting) clearAlert(); return }
 
