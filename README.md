@@ -6,7 +6,7 @@
 
 <p align="center">
   Google Maps turn-by-turn, phone notifications and ride analytics on the Gen-3 KTM and Husqvarna dash.<br>
-  On-device only. No account, no server, no data collection.
+  Local-first. No account, analytics, ads or data collection.
 </p>
 
 <p align="center">
@@ -26,22 +26,22 @@
 
 ## What it does
 
-Three jobs, all on your phone, with no account and no server.
+Three jobs, all on your phone, with no account or project-operated server.
 
 | | |
 |---|---|
-| **Push to the dash** | Google Maps turn-by-turn, phone notifications, now-playing and idle info, mirrored onto the bike's own display over Bluetooth. |
-| **Pull from the handlebar** | The bike's four handlebar buttons become a controller for your phone — a D-pad over any app, or music transport. |
+| **Push to the dash** | Google Maps turn-by-turn, phone notifications and an on-demand now-playing view, mirrored onto the bike's own display over Bluetooth. |
+| **Pull from the handlebar** | The bike's four handlebar buttons control media, calls and Google Assistant, and can read the latest message aloud. |
 | **Record and analyse the ride** | Rides record themselves as standard GPX, then come back as a map, charts, detected events, a smoothness score and a fuel estimate. |
 
 ---
 
 ## What works today
 
-**Silent auto-reconnect.** Once paired, cycling the ignition off and on reconnects on its own in about a
-second — no accepting an "add device" prompt on the dash every ride. The app remembers your pairing keys
-and re-presents them, and keeps them across app updates, reinstalls and new phones. Verified on a KTM 390
-Adventure across repeated ignition cycles.
+**Silent, ignition-linked reconnect.** Once paired, cycling the ignition reconnects without another
+"add device" confirmation. When the bike remains unreachable for three minutes, the foreground service
+stops and its notification disappears. A low-power, address-filtered BLE scan then waits for the dash to
+advertise and starts the service again at the next ignition-on. Pairing keys survive normal app updates.
 
 **Google Maps turn-by-turn, on your bike's dash.** Start navigating and the Gen-3 centre display shows
 the turn arrow, distance, road name, ETA and remaining distance. The maneuver arrow — including
@@ -58,29 +58,38 @@ bike — KTM dark and orange, Husqvarna light and blue. You pick on first run an
 |---|---|
 | ![](docs/screenshots/brand-select-ktm.png) | ![](docs/screenshots/brand-select-husqvarna.png) |
 
-**Handlebar remote — a real controller.** Long-press **Up** from any screen opens a mode picker:
+**Handlebar remote — music and hands-free actions.** Hold **Back** on the dash to enter its remote-control
+mode; hold it again to return the buttons to the bike. There is no app-side mode picker or Accessibility
+service.
 
-| Mode | Up | Down | Set | Back |
-|---|---|---|---|---|
-| **Controller** | move up | move down | tap = right · double-tap = **open/select** · hold = long-press | tap = left · double-tap = back |
-| **Music** | tap = volume up · double-tap = next track | tap = volume down · double-tap = previous | play / pause | — |
-| **Bike (off)** | — | — | — | the buttons go back to the bike |
+| Button | Tap | Double-tap | Hold |
+|---|---|---|---|
+| **Up** | volume up | — | Google Assistant |
+| **Down** | volume down | — | show `MUSIC` and `Title - Artist` on the dash for five seconds, then restore the latest turn |
+| **Set** | play / pause | — | read the latest non-navigation notification aloud |
+| **Back** | next track (after a 350 ms window) | previous track | reserved by the dash for RC on/off |
 
-Long-press **Down** opens Google Maps from anywhere. Every press is read on release, and the app tells a
-tap, a double-click and a press-and-hold apart using thresholds measured on the real hardware.
+While the phone is ringing, **Set** answers and **Back** rejects (or silences the ringer if Android
+refuses third-party call rejection). A rising/falling chime confirms RC on/off, every accepted press has
+an audible tick, and a low tone confirms a hold. A Back press left over from entering RC mode is ignored.
+Presses are available to the app only while the dash reports RC mode as active.
 
 **Turn sounds.** Optional stereo approach beeps — left ear for a left turn, right for a right — that
 speed up as you near the corner and go quiet when you stop. Adjustable volume, swappable channels.
 
-**Overspeed alert.** Plays on the alarm channel at full volume, so it's audible over wind and engine and
-sounds through Do Not Disturb.
+**Overspeed alert.** Uses phone GPS speed and plays on the alarm channel at full volume, so it is audible
+over wind and engine and sounds through Do Not Disturb. Background use requires Location set to
+**Allow all the time**. Diagnostics log the configured limit, first speed fix, per-minute top speed and
+any tone failure.
 
-**The dash's idle screen.** When you're not navigating, the dash rotates clock and date, the current
-track, and live weather (via Open-Meteo, no API key). When the next turn is 500 m+ away it can show the
-song instead of the road name, switching back as the turn approaches.
+**On-demand now playing.** Hold **Down** to replace the centre guidance lines with the active media
+session's title and artist for five seconds. Navigation updates received during the peek are retained and
+the newest arrow and instruction are restored afterwards.
 
 **Notification mirroring** with group chats and summary notifications filtered out so only real messages
 get through, emoji and unsupported glyphs stripped so text reads cleanly, and a one-tap quick-mute.
+Hold **Set** to read the latest mirrored, non-navigation notification with on-device text-to-speech;
+music is temporarily ducked while it speaks.
 
 **Ride recording and analytics.** Rides save as standard GPX and come back as a real map coloured by
 speed with traffic stretches highlighted, a master time slider that scrubs the map marker and every chart
@@ -121,10 +130,6 @@ anything, and always shows the sample count.
 a new phone — rides already on the phone are skipped, never overwritten. Switching phones no longer means
 losing your history or the traffic map built from it.
 
-**Auto-exit.** The app closes itself after 10 minutes with no bike connected, so it doesn't sit running in
-your pocket on a day you never rode. The timer resets on connect and is suspended while a ride is
-recording.
-
 **A rebuilt interface** across every screen: glove-sized targets, a focus ring on everything the handlebar
 remote can reach, and Settings split into eight labelled groups.
 
@@ -138,22 +143,26 @@ remote can reach, and Settings split into eight labelled groups.
 
 ---
 
-## Privacy — nothing is collected, nothing leaves your phone
+## Privacy
 
 - No accounts. No analytics. No servers. No data collection. No ads.
-- Everything runs on-device: the turn-icon model, notification handling, ride recording and analytics.
-- Your location, routes and notifications never leave the phone.
-- Two optional exceptions, both your choice: live weather for the dash idle screen (Open-Meteo, no key,
-  sends only a coarse location), and notification summaries if you add your own Gemini API key — off by
-  default.
+- The turn-icon model, notification handling, text-to-speech, ride recording and analytics run on-device.
+- Location, routes and notifications stay on the phone unless you explicitly share a GPX, backup or log.
+- The only network feature is optional Gemini notification summarisation. It is disabled unless you enter
+  your own API key. When enabled, opening the Notifications screen sends those notification app names,
+  titles and message text to Google's Gemini API.
+- Diagnostic logs are also copied to `Downloads/OpenDash`. They can contain notification banner text,
+  song titles and the bike's Bluetooth address; inspect them before sharing.
+- Android cloud backup is disabled. There are no analytics, crash-reporting, advertising or tracking SDKs.
 
 ---
 
 ## Compatibility and setup
 
-- Tested on a **KTM 390 Adventure (2025)**. It targets the Gen-3 "connected" dash that KTM's and
-  Husqvarna's own apps use for turn-by-turn, so it should work on other 2020+ Gen-3 bikes — but 1290 /
-  890 / SMC and the Husqvarna models are still lightly tested. Reports and logs are very welcome.
+- Tested on a **KTM 390 Adventure (2025)** and **KTM Duke 250 Gen-3**. It targets the Gen-3 "connected"
+  dash that KTM's and Husqvarna's own apps use for turn-by-turn, so it should work on other 2020+ Gen-3
+  bikes — but 1290 / 890 / SMC and the Husqvarna models are still lightly tested. Reports and logs are
+  very welcome.
 - You likely need the connectivity / Tech Pack active. The turn-by-turn dash feature appears to be gated
   behind that activation; without it the dash may not expose the nav feature to pair with. Not fully
   confirmed — testers with and without it, please report.
@@ -178,8 +187,9 @@ remote can reach, and Settings split into eight labelled groups.
    event detection.
 6. The full analytics map needs a free Google Maps API key added at build time (below). Without one,
    everything still works via the built-in route sketch.
-7. Full vehicle telemetry (RPM, gear, coolant, fuel, TPMS) exists in the protocol but the dash rejects
-   the writes. It is **not** available — help welcome.
+7. Full vehicle telemetry (RPM, gear, coolant, fuel and TPMS) requires the dash's PRPC/telemetry service.
+   The Duke 250 Gen-3 tested here does not expose that service, so this data cannot be read from that bike.
+   Two other undocumented services return only zeroes and are deliberately left untouched.
 8. This is a beta. If something crashes or misbehaves, please open an issue or share your logs from
    Settings → Diagnostics, and include your bike model and firmware if you can.
 
@@ -214,9 +224,16 @@ Install to a connected phone with `adb install -r app/build/outputs/apk/debug/ap
 Android", restrict it to package `com.navigator.app` plus your keystore's SHA-1, then add
 `MAPS_API_KEY=your-key` to `local.properties` before building.
 
-On the phone: enable **Notification access** (required to mirror navigation and notifications); enable
-**Accessibility** only if you want the handlebar remote to control other apps; and disable battery
-optimisation so the app stays connected in the background.
+On the phone:
+
+- Enable **Notification access** to mirror navigation and notifications, control active media sessions,
+  and read the latest message aloud.
+- Set Location to **Allow all the time** for ride recording and overspeed alerts while the phone is locked.
+- Allow **Display over other apps** so a handlebar hold can launch Assistant from the background.
+- Disable battery optimisation so Android permits the bike's BLE advertisement to wake the connection
+  service reliably.
+- `ANSWER_PHONE_CALLS` is used only for Set-to-answer and Back-to-reject while ringing. The Accessibility
+  service is no longer used.
 
 ## The turn-icon model (`ml/`)
 
@@ -230,8 +247,7 @@ generated on-device by a debug exporter (see [`ml/README.md`](ml/README.md)).
 This is an early, community-driven hobby project and contributions are very welcome, whether you ride one
 of these bikes or just enjoy reverse-engineering and Android/BLE work. Good places to start:
 
-- **Full vehicle telemetry** over the dash's PRPC channel — the service is present but the writes are
-  rejected.
+- **Full vehicle telemetry** on bike models whose dash actually exposes the PRPC/telemetry service.
 - **Older "MY RIDE" bikes** need a second connection path (Bluetooth Classic + JSON).
 - **Test on a physical Husqvarna** and report how it goes.
 - More nav apps (Waze, OsmAnd, HERE) and notification sources.

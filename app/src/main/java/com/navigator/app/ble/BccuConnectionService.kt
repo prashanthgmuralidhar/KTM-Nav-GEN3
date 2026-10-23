@@ -25,9 +25,7 @@ import com.navigator.app.settings.AppSettings
 import com.navigator.app.ui.AppForegroundState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.util.ArrayDeque
@@ -87,7 +85,6 @@ class BccuConnectionService : LifecycleService() {
         private const val RETRY_COOLDOWN_FIRST_MS = 15_000L
         private const val RETRY_COOLDOWN_LATER_MS = 45_000L
         /** Three Up presses within this window open the handlebar mode-picker overlay. */
-        private const val TRIPLE_UP_WINDOW_MS = 1500L
         /** How often the reconnect watchdog checks that we're linked (or retries). */
         private const val RECONNECT_WATCHDOG_MS = 20_000L
         /** A foreground (direct) connect attempt stuck this long is recycled and retried. */
@@ -103,12 +100,17 @@ class BccuConnectionService : LifecycleService() {
          */
         private const val STUCK_BACKGROUND_MS = 600_000L
         const val EXTRA_DEVICE_ADDRESS = "device_address"
+        private const val MEDIA_PEEK_MS = 5_000L
+        /**
+         * Bike unreachable this long (ignition off) with the app not on screen:
+         * shut the service down and leave a low-power wake scan to restart it.
+         * Long enough to ride out a fuel stop's ignition cycle without churn.
+         */
+        private const val IDLE_STOP_MS = 180_000L
 
         private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
         val connectionState: StateFlow<ConnectionState> = _connectionState
 
-        private val _buttonEvents = MutableSharedFlow<BccuProtocol.HandlebarButton>(extraBufferCapacity = 8)
-        val buttonEvents: SharedFlow<BccuProtocol.HandlebarButton> = _buttonEvents
 
         private val _navNotificationText = MutableStateFlow<String?>(null)
         val navNotificationText: StateFlow<String?> = _navNotificationText
@@ -143,6 +145,7 @@ class BccuConnectionService : LifecycleService() {
         // controller state machine) can reach the running service instance
         // without binder/messenger plumbing. Null when the service isn't running.
         private var runningInstance: BccuConnectionService? = null
+        val isRunning: Boolean get() = runningInstance != null
 
         fun sendNotificationIfRunning(text: String, icon: BccuProtocol.NotificationIcon) {
             runningInstance?.sendNotification(text, icon)
@@ -172,6 +175,11 @@ class BccuConnectionService : LifecycleService() {
         const val ACTION_EXIT = "com.navigator.app.action.EXIT"
         /** Broadcast the running MainActivity listens for to finish its task on notification-exit. */
         const val ACTION_FINISH_ACTIVITY = "com.navigator.app.action.FINISH_ACTIVITY"
+
+        /** Show [text] on the guidance lines for [MEDIA_PEEK_MS], then put the nav back. */
+        fun showMediaPeekIfRunning(text: String) {
+            runningInstance?.showMediaPeek(text)
+        }
 
         fun sendTurnIconIfRunning(icon: BccuProtocol.TurnIcon) {
             runningInstance?.sendTurnIcon(icon)
@@ -203,6 +211,13 @@ class BccuConnectionService : LifecycleService() {
     private var clearJob: Job? = null
     private var marqueeJob: Job? = null
     private var guidanceClearJob: Job? = null
+    // Last guidance written to the dash, so a media peek can restore it. Nav
+    // updates that arrive mid-peek only update these.
+    private var shownTurnIcon: BccuProtocol.TurnIcon? = null
+    private var shownDistance: String? = null
+    private var shownRoad: String? = null
+    private var mediaPeekJob: Job? = null
+    private val mediaPeeking get() = mediaPeekJob?.isActive == true
     private var lastNotificationIcon: BccuProtocol.NotificationIcon = BccuProtocol.NotificationIcon.NOTIFICATION_WAYPOINT
     private var rssiJob: Job? = null
     private var reconnectWatchdogJob: Job? = null
@@ -214,8 +229,7 @@ class BccuConnectionService : LifecycleService() {
     @Volatile private var scanning: Boolean = false
     @Volatile private var scanTargetAddress: String? = null
     private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private var modeOverlay: com.navigator.app.controller.RemoteModeOverlay? = null
-    private val upPressTimes = ArrayDeque<Long>()
+    private var handlebarRemote: com.navigator.app.controller.HandlebarRemote? = null
 
     private var prpcAvailable = false
     private var telemetrySchema: List<Datapoint>? = null
@@ -242,6 +256,7 @@ class BccuConnectionService : LifecycleService() {
         createNotificationChannel()
         startForegroundWithTypes("Connecting...")
         runningInstance = this
+        com.navigator.app.connect.BikeWakeScan.disarm(this)
         startReconnectWatchdog()
         registerAdapterStateReceiver()
         speedMonitor = com.navigator.app.location.SpeedMonitor(this).also { it.start() }
@@ -262,15 +277,23 @@ class BccuConnectionService : LifecycleService() {
                 routeRecorder?.onEngineState(on)
             }
         }
-        // Debug-only: `adb shell am broadcast -a com.navigator.app.DEBUG_MODE_OVERLAY`
-        // shows the handlebar mode picker without a bike, to verify it renders.
+        handlebarRemote = com.navigator.app.controller.HandlebarRemote(this)
+        // Debug-only: replay a handlebar mask without a bike, e.g.
+        // `adb shell am broadcast -a com.navigator.app.DEBUG_RCM --ei mask 8` (Up down)
+        // then `--ei mask 0` (release). Bits: Set 1, Back 2, Down 4, Up 8.
         if (com.navigator.app.BuildConfig.DEBUG) {
             val r = object : android.content.BroadcastReceiver() {
-                override fun onReceive(c: Context?, i: Intent?) { showModeOverlay() }
+                override fun onReceive(c: Context?, i: Intent?) {
+                    val mask = i?.getIntExtra("mask", 0) ?: 0
+                    handlebarRemote?.onRcm(true, mask, android.os.SystemClock.elapsedRealtime())
+                }
             }
-            val f = android.content.IntentFilter("com.navigator.app.DEBUG_MODE_OVERLAY")
-            if (Build.VERSION.SDK_INT >= 33) registerReceiver(r, f, Context.RECEIVER_EXPORTED)
-            else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(r, f)
+            val f = android.content.IntentFilter("com.navigator.app.DEBUG_RCM")
+            // DUMP is held by `adb shell` but not grantable to apps, so other
+            // installed apps can't fake button presses (e.g. answer a call).
+            val senderPermission = android.Manifest.permission.DUMP
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(r, f, senderPermission, null, Context.RECEIVER_EXPORTED)
+            else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(r, f, senderPermission, null)
         }
     }
 
@@ -370,6 +393,24 @@ class BccuConnectionService : LifecycleService() {
      * flight, and force-recycles a connection that's been stuck "connecting"
      * far too long.
      */
+    private var unlinkedSinceMs = System.currentTimeMillis()
+
+    /** Ignition is off: stop entirely (dropping the notification) and let the wake scan bring us back. */
+    private fun idleStopIfBikeGone(address: String): Boolean {
+        if (_connectionState.value == ConnectionState.AUTHENTICATED) {
+            unlinkedSinceMs = System.currentTimeMillis()
+            return false
+        }
+        val idleMs = System.currentTimeMillis() - unlinkedSinceMs
+        if (idleMs < IDLE_STOP_MS || AppForegroundState.isForeground) return false
+        if (!AppSettings(this).hasPairedBefore(address)) return false
+        AppLogger.log("BLE", "Bike unreachable for ${idleMs / 1000}s - stopping until it advertises again")
+        com.navigator.app.connect.BikeWakeScan.arm(this)
+        androidx.core.app.ServiceCompat.stopForeground(this, androidx.core.app.ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
+        return true
+    }
+
     private fun startReconnectWatchdog() {
         reconnectWatchdogJob?.cancel()
         reconnectWatchdogJob = lifecycleScope.launch {
@@ -377,6 +418,7 @@ class BccuConnectionService : LifecycleService() {
                 delay(RECONNECT_WATCHDOG_MS)
                 try {
                     val address = AppSettings(this@BccuConnectionService).bondedDeviceAddress ?: continue
+                    if (idleStopIfBikeGone(address)) break
                     if (_connectionState.value == ConnectionState.AUTHENTICATED) continue
                     val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
                     if (adapter == null || !adapter.isEnabled) continue
@@ -551,7 +593,7 @@ class BccuConnectionService : LifecycleService() {
         vibrationMonitor?.destroy(); vibrationMonitor = null
         stopBleScan()
         settleJob?.cancel(); settleJob = null
-        mainHandler.post { modeOverlay?.hide(); modeOverlay = null }
+        handlebarRemote?.destroy(); handlebarRemote = null
         reconnectWatchdogJob?.cancel(); reconnectWatchdogJob = null
         gatt?.disconnect()
         gatt?.close()
@@ -898,19 +940,30 @@ class BccuConnectionService : LifecycleService() {
 
         when {
             cmd == BccuProtocol.CMD_HELLO -> {
-                // Always echo HELLO back. Field logs proved this dash decides
-                // whether to show its "confirm pairing" prompt entirely from its
-                // own bond memory - not from which command we reply. Echoing
-                // HELLO is the ONLY reply it acts on: to a bonded dash it answers
-                // with GENERATE_KEYS in a few seconds and no prompt; to a genuinely
-                // new device it prompts and answers once the rider confirms (~30s).
-                // The old "known bike -> reply GENERATE_KEYS to skip the prompt"
-                // shortcut was silently ignored by the dash, stalling every single
-                // reconnect and (via the recovery) forcing a spurious re-pair.
+                // Known bike with a persisted key pool: reply GENERATE_KEYS with
+                // that pool loaded, so the dash key-selects from it and resumes
+                // silently (field-verified in the v0.3.0-beta release build; a
+                // Duke 250 treats a HELLO echo as a new phone and demands the
+                // pairing menu). The shortcut only stalled when the app-side pool
+                // was empty. If a handshake already stalled this cycle, fall back
+                // to echoing HELLO and let the dash decide whether to prompt.
                 val address = currentDeviceAddress
-                val known = address != null && AppSettings(this@BccuConnectionService).hasPairedBefore(address)
-                AppLogger.log("Auth", "cmd=HELLO (${if (known) "known" else "new"} bike $address) - echoing HELLO; dash decides whether to prompt")
-                replyControl(BccuProtocol.CMD_HELLO)
+                val settings = AppSettings(this@BccuConnectionService)
+                val known = address != null && settings.hasPairedBefore(address)
+                val pool = address?.let { settings.loadSessionKeys(it) }
+                if (known && pool != null && handshakeRecoveries == 0) {
+                    sessionKeys = pool
+                    AppLogger.log("Auth", "cmd=HELLO (known bike $address) - have persisted key pool, replying GENERATE_KEYS for silent reconnect")
+                    replyControl(BccuProtocol.CMD_GENERATE_KEYS)
+                } else {
+                    val why = when {
+                        !known -> "new"
+                        pool == null -> "known, no stored pool"
+                        else -> "known, retrying after stall"
+                    }
+                    AppLogger.log("Auth", "cmd=HELLO ($why bike $address) - echoing HELLO; dash decides whether to prompt")
+                    replyControl(BccuProtocol.CMD_HELLO)
+                }
             }
             cmd == BccuProtocol.CMD_GENERATE_KEYS -> {
                 AppLogger.log("Auth", "cmd=GENERATE_KEYS, deriving session keys")
@@ -1032,115 +1085,10 @@ class BccuConnectionService : LifecycleService() {
         }
         val rcm = BccuProtocol.parseRcmValue(decoded)
         val mask = rcm.pressed.entries.fold(0) { acc, e -> if (e.value) acc or (1 shl e.key.bitIndex) else acc }
-        for (button in BccuProtocol.HandlebarButton.entries) {
-            val wasPressed = (lastRcmMask shr button.bitIndex) and 1 == 1
-            val isPressed = (mask shr button.bitIndex) and 1 == 1
-            if (!wasPressed && isPressed) {
-                AppLogger.log("RCM", "Handlebar button event: ${button.name}")
-                onHandlebarButton(button)
-            }
-        }
+        if (mask != lastRcmMask) AppLogger.log("RCM", "Buttons mask=$mask active=${rcm.active}")
         lastRcmMask = mask
-    }
-
-    /**
-     * Central routing for every handlebar press. Precedence:
-     * 1. If the mode-picker overlay is up, the buttons drive IT (Up/Down select,
-     *    Set confirm, Back close) and go nowhere else.
-     * 2. Triple-press Up (3 within [TRIPLE_UP_WINDOW_MS]) opens the mode picker.
-     * 3. Otherwise emit as normal - consumers (media/menu state machine, gamepad
-     *    accessibility service) act based on the chosen [AppSettings.remoteMode].
-     */
-    private fun onHandlebarButton(button: BccuProtocol.HandlebarButton) {
-        if (modeOverlay?.isShowing == true) {
-            mainHandler.post {
-                val ov = modeOverlay ?: return@post
-                when (button) {
-                    BccuProtocol.HandlebarButton.UP -> ov.moveSelection(-1)
-                    BccuProtocol.HandlebarButton.DOWN -> ov.moveSelection(+1)
-                    BccuProtocol.HandlebarButton.SET -> ov.confirm()
-                    BccuProtocol.HandlebarButton.BACK -> ov.hide()
-                }
-            }
-            return
-        }
-
-        if (button == BccuProtocol.HandlebarButton.UP) {
-            val now = System.currentTimeMillis()
-            upPressTimes.addLast(now)
-            while (upPressTimes.isNotEmpty() && now - upPressTimes.first() > TRIPLE_UP_WINDOW_MS) upPressTimes.removeFirst()
-            if (upPressTimes.size >= 3) {
-                upPressTimes.clear()
-                showModeOverlay()
-                return
-            }
-        } else {
-            upPressTimes.clear()
-        }
-
-        _buttonEvents.tryEmit(button)
-
-        if (button == BccuProtocol.HandlebarButton.BACK && !AppForegroundState.isForeground) {
-            // In gamepad mode, BACK falls through to the foreground app (the
-            // accessibility service makes it a global Back); otherwise bring
-            // Navigator Gen3 forward so Back opens its menu.
-            val gamepad = AppSettings(this).remoteMode == AppSettings.MODE_GAMEPAD &&
-                com.navigator.app.controller.RemoteControlAccessibilityService.isRunning
-            if (gamepad) {
-                AppLogger.log("RCM", "Gamepad mode - leaving BACK to the foreground app")
-            } else {
-                val intent = Intent(this, com.navigator.app.ui.MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                startActivity(intent)
-            }
-        }
-    }
-
-    private fun showModeOverlay() {
-        mainHandler.post {
-            if (modeOverlay == null) modeOverlay = com.navigator.app.controller.RemoteModeOverlay(this) { mode ->
-                applyRemoteMode(mode)
-            }
-            val ov = modeOverlay ?: return@post
-            if (!ov.canShow()) {
-                AppLogger.log("RCM", "Mode overlay: no draw-over-apps permission - opening settings")
-                runCatching {
-                    startActivity(
-                        Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                            android.net.Uri.parse("package:$packageName"))
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    )
-                }
-                return@post
-            }
-            AppLogger.log("RCM", "Opening handlebar mode overlay")
-            ov.show(AppSettings(this).remoteMode)
-        }
-    }
-
-    private fun applyRemoteMode(mode: String) {
-        val s = AppSettings(this)
-        s.remoteMode = mode
-        AppLogger.log("RCM", "Remote mode set to $mode")
-        when (mode) {
-            AppSettings.MODE_GAMEPAD -> {
-                s.gamepadEnabled = true
-                if (!com.navigator.app.controller.RemoteControlAccessibilityService.isRunning) {
-                    runCatching {
-                        startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    }
-                }
-            }
-            AppSettings.MODE_DASH -> {
-                s.gamepadEnabled = false
-                runCatching {
-                    startActivity(Intent(this, com.navigator.app.ui.MainActivity::class.java)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT))
-                }
-            }
-            else -> s.gamepadEnabled = false // MEDIA
-        }
+        val now = android.os.SystemClock.elapsedRealtime()
+        mainHandler.post { handlebarRemote?.onRcm(rcm.active, mask, now) }
     }
 
     private fun replyControl(command: Int) {
@@ -1158,6 +1106,8 @@ class BccuConnectionService : LifecycleService() {
             AppLogger.log("Dash", "!! Cannot send TURN_ICON - not authenticated yet")
             return
         }
+        shownTurnIcon = icon
+        if (mediaPeeking) return
         AppLogger.log("Dash", "Sending TURN_ICON = ${icon.name}")
         val payload = BccuProtocol.buildTurnIconPayload(icon, visibility)
         writeCharacteristic(BccuProtocol.TURN_ICON, BccuCrypto.encryptData(payload, key, iv), coalesce = true)
@@ -1330,15 +1280,12 @@ class BccuConnectionService : LifecycleService() {
         // A fresh guidance update means navigation is still active; cancel any
         // pending "nav ended" clear that a transient notification-remove queued.
         guidanceClearJob?.cancel()
-        if (distanceText != null) {
-            AppLogger.log("Dash", "Sending TURN_DISTANCE = \"$distanceText\"")
-            val payload = BccuProtocol.buildTurnDistancePayload(distanceText)
-            writeCharacteristic(BccuProtocol.TURN_DISTANCE, BccuCrypto.encryptData(payload, key, iv), coalesce = true)
-        }
-        if (roadText != null) {
-            AppLogger.log("Dash", "Sending TURN_ROAD = \"$roadText\"")
-            val payload = BccuProtocol.buildTurnRoadPayload(roadText)
-            writeCharacteristic(BccuProtocol.TURN_ROAD, BccuCrypto.encryptData(payload, key, iv), coalesce = true)
+        if (distanceText != null) shownDistance = distanceText
+        if (roadText != null) shownRoad = roadText
+        if (mediaPeeking) {
+            AppLogger.log("Dash", "Media peek on screen - holding back TURN_DISTANCE/TURN_ROAD")
+        } else {
+            writeGuidanceLines(distanceText, roadText, key, iv)
         }
         if (etaText != null) {
             AppLogger.log("Dash", "Sending ETA = \"$etaText\"")
@@ -1350,6 +1297,56 @@ class BccuConnectionService : LifecycleService() {
             val payload = BccuProtocol.buildRemainingDistancePayload(remainingDistanceText)
             writeCharacteristic(BccuProtocol.REMAINING_DISTANCE, BccuCrypto.encryptData(payload, key, iv), coalesce = true)
         }
+    }
+
+    private fun writeGuidanceLines(distanceText: String?, roadText: String?, key: ByteArray, iv: ByteArray) {
+        if (distanceText != null) {
+            AppLogger.log("Dash", "Sending TURN_DISTANCE = \"$distanceText\"")
+            val payload = BccuProtocol.buildTurnDistancePayload(distanceText)
+            writeCharacteristic(BccuProtocol.TURN_DISTANCE, BccuCrypto.encryptData(payload, key, iv), coalesce = true)
+        }
+        if (roadText != null) {
+            AppLogger.log("Dash", "Sending TURN_ROAD = \"$roadText\"")
+            val payload = BccuProtocol.buildTurnRoadPayload(roadText)
+            writeCharacteristic(BccuProtocol.TURN_ROAD, BccuCrypto.encryptData(payload, key, iv), coalesce = true)
+        }
+    }
+
+    /**
+     * Put [text] (e.g. "Song - Artist") on the road line with "MUSIC" in the
+     * distance slot and the turn icon hidden, then after [MEDIA_PEEK_MS]
+     * re-send the latest guidance (or blank those fields if there is none).
+     */
+    fun showMediaPeek(text: String) {
+        val key = activeSessionKey ?: return
+        val iv = tempIv ?: return
+        AppLogger.log("Dash", "Media peek: \"$text\"")
+        mediaPeekJob?.cancel()
+        writeCharacteristic(BccuProtocol.TURN_ICON,
+            BccuCrypto.encryptData(BccuProtocol.buildTurnIconPayload(BccuProtocol.TurnIcon.UNDEFINED, BccuProtocol.Visibility.OFF), key, iv), coalesce = true)
+        writeGuidanceLines("MUSIC", text, key, iv)
+        mediaPeekJob = lifecycleScope.launch {
+            delay(MEDIA_PEEK_MS)
+            restoreAfterMediaPeek()
+        }
+    }
+
+    private fun restoreAfterMediaPeek() {
+        val key = activeSessionKey ?: return
+        val iv = tempIv ?: return
+        val icon = shownTurnIcon
+        if (icon == null && shownDistance == null && shownRoad == null) {
+            AppLogger.log("Dash", "Media peek over - no guidance to restore, blanking")
+            val off = BccuProtocol.Visibility.OFF
+            writeCharacteristic(BccuProtocol.TURN_DISTANCE,
+                BccuCrypto.encryptData(BccuProtocol.buildTurnDistancePayload("", off), key, iv), coalesce = true)
+            writeCharacteristic(BccuProtocol.TURN_ROAD,
+                BccuCrypto.encryptData(BccuProtocol.buildTurnRoadPayload("", off), key, iv), coalesce = true)
+            return
+        }
+        AppLogger.log("Dash", "Media peek over - restoring guidance")
+        if (icon != null) sendTurnIcon(icon)
+        writeGuidanceLines(shownDistance ?: "", shownRoad ?: "", key, iv)
     }
 
     /**
@@ -1377,6 +1374,8 @@ class BccuConnectionService : LifecycleService() {
         // Navigation genuinely ended (this call is debounced past Maps' routine
         // remove+repost) - let the next route's first approach beep fire again.
         com.navigator.app.audio.TurnBeeper.reset()
+        shownTurnIcon = null; shownDistance = null; shownRoad = null
+        mediaPeekJob?.cancel(); mediaPeekJob = null
         val key = activeSessionKey ?: return
         val iv = tempIv ?: return
         AppLogger.log("Dash", "Clearing center guidance (navigation ended)")

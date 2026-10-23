@@ -147,8 +147,8 @@ fun OnboardingScreen(settings: AppSettings, onComplete: () -> Unit) {
                     2 -> FeatureStep(
                         eyebrow = "Handlebar remote",
                         headline = "Control it\nfrom the bar.",
-                        body = "The four-button handlebar remote drives media, answers calls, and moves " +
-                            "through the menu — completely hands-free while you ride.",
+                        body = "Hold Back on the dash to hand its buttons to your phone: music, volume, " +
+                            "calls, Google Assistant and read-aloud messages — hands-free while you ride.",
                         illustration = { RemotePreview() },
                         onContinue = { step = 3 },
                         onBack = { step = 1 },
@@ -460,7 +460,7 @@ private fun DashPreview() {
     }
 }
 
-/** The four handlebar keys with their idle-mode actions. */
+/** The four handlebar keys and what they do (see HandlebarRemote). */
 @Composable
 private fun RemotePreview() {
     Column(
@@ -472,10 +472,10 @@ private fun RemotePreview() {
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        RemoteRow("UP", "Next track")
-        RemoteRow("DOWN", "Previous track")
-        RemoteRow("SET", "Play / pause · answer call")
-        RemoteRow("BACK", "Open the menu")
+        RemoteRow("UP", "Volume up · hold: Assistant")
+        RemoteRow("DOWN", "Volume down · hold: now playing")
+        RemoteRow("SET", "Play / pause · hold: read message")
+        RemoteRow("BACK", "Next · double: previous · reject")
     }
 }
 
@@ -567,6 +567,7 @@ private fun ColumnScope.PermissionsStep(
     val notifPost = tick.let { OpenDashPermissions.notificationsPostGranted(context) }
     val phone = tick.let { OpenDashPermissions.phoneGranted(context) }
     val notifAccess = tick.let { OpenDashPermissions.notificationAccessGranted(context) }
+    val overlay = tick.let { AndroidSettings.canDrawOverlays(context) }
     val runtimeAllGranted = btGranted && notifPost && phone
 
     Eyebrow("Permissions", color = Ktm.Orange, fontSize = 12, letterSpacing = 2.0)
@@ -604,9 +605,23 @@ private fun ColumnScope.PermissionsStep(
         PermissionCard(
             icon = OpenDashIcons.Phone,
             title = "Phone & calls",
-            desc = "Answer and silence calls from the handlebar remote while riding.",
+            desc = "Answer and reject calls from the handlebar remote while riding.",
             granted = phone,
             onGrant = { permLauncher.launch(OpenDashPermissions.runtimePermissions()) },
+        )
+        PermissionCard(
+            icon = OpenDashIcons.Navigation,
+            title = "Display over other apps",
+            desc = "Lets a handlebar hold open Google Assistant while the phone is in your pocket.",
+            granted = overlay,
+            onGrant = {
+                context.startActivity(
+                    Intent(
+                        AndroidSettings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        android.net.Uri.parse("package:${context.packageName}"),
+                    )
+                )
+            },
         )
         PermissionCard(
             icon = OpenDashIcons.Navigation,

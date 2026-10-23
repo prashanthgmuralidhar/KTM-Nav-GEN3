@@ -8,6 +8,9 @@
         <intent>
             <action android:name="android.intent.action.MAIN" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
     </queries>
 
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
@@ -83,19 +86,6 @@
             android:foregroundServiceType="connectedDevice|location" />
 
         <service
-            android:name=".controller.RemoteControlAccessibilityService"
-            android:exported="true"
-            android:label="Navigator Gen3 handlebar gamepad"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/remote_control_accessibility" />
-        </service>
-
-        <service
             android:name=".notifications.AppNotificationListener"
             android:exported="true"
             android:label="Navigator Gen3 notifications"
@@ -114,6 +104,10 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".connect.BikeSeenReceiver"
+            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -38,6 +38,7 @@ class SpeedMonitor(private val context: Context) : LocationListener {
         private const val BEEP_INTERVAL_MS = 900L
         /** Dash banner refresh while overspeeding (each update is a BLE write). */
         private const val DASH_UPDATE_MS = 2_000L
+        private const val SPEED_LOG_INTERVAL_MS = 60_000L
 
         /** Live GPS speed in km/h for any UI that wants it; null = no recent fix. */
         private val _speedKmh = MutableStateFlow<Float?>(null)
@@ -47,6 +48,10 @@ class SpeedMonitor(private val context: Context) : LocationListener {
     private val settings = AppSettings(context)
     private var alerting = false
     private var started = false
+    private var loggedFirstFix = false
+    private var maxKmhSinceLog = 0f
+    private var lastSpeedLogMs = 0L
+    private var loggedToneFailure = false
     // One long-lived ToneGenerator: creating one per beep leaks native
     // AudioTracks (finalizer-reliant) and can exhaust AudioFlinger's track cap.
     private var toneGenerator: ToneGenerator? = null
@@ -70,6 +75,11 @@ class SpeedMonitor(private val context: Context) : LocationListener {
                 val tg = toneGenerator ?: ToneGenerator(AudioManager.STREAM_ALARM, 100)
                     .also { toneGenerator = it }
                 tg.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 400)
+            }.onFailure {
+                if (!loggedToneFailure) {
+                    loggedToneFailure = true
+                    AppLogger.log("Speed", "!! Overspeed tone failed: $it")
+                }
             }
             staleHandler.postDelayed(this, BEEP_INTERVAL_MS)
         }
@@ -90,7 +100,12 @@ class SpeedMonitor(private val context: Context) : LocationListener {
             lm.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, this)
             started = true
             createChannel()
-            AppLogger.log("Speed", "Overspeed monitor started (limit=${settings.overspeedLimitKmh} km/h)")
+            val background = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+            AppLogger.log("Speed", "Overspeed monitor started (limit=${settings.overspeedLimitKmh} km/h, enabled=${settings.overspeedEnabled}, background location=$background)")
+            if (!background) {
+                AppLogger.log("Speed", "!! Location is not 'Allow all the time' - GPS (and overspeed alerts) stop while the phone is locked")
+            }
         } catch (e: Exception) {
             AppLogger.log("Speed", "!! requestLocationUpdates failed: $e")
         }
@@ -99,6 +114,7 @@ class SpeedMonitor(private val context: Context) : LocationListener {
     fun stop() {
         if (!started) return
         started = false
+        loggedFirstFix = false
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
         runCatching { lm.removeUpdates(this) }
         clearAlert()
@@ -110,6 +126,17 @@ class SpeedMonitor(private val context: Context) : LocationListener {
     override fun onLocationChanged(location: Location) {
         if (!location.hasSpeed()) return
         val kmh = location.speed * 3.6f
+        if (!loggedFirstFix) {
+            loggedFirstFix = true
+            AppLogger.log("Speed", "First GPS fix with speed: %.0f km/h".format(kmh))
+        }
+        maxKmhSinceLog = maxOf(maxKmhSinceLog, kmh)
+        val nowMs = System.currentTimeMillis()
+        if (nowMs - lastSpeedLogMs >= SPEED_LOG_INTERVAL_MS) {
+            AppLogger.log("Speed", "Top speed last minute: %.0f km/h (limit=${settings.overspeedLimitKmh}, enabled=${settings.overspeedEnabled}, alerting=$alerting)".format(maxKmhSinceLog))
+            lastSpeedLogMs = nowMs
+            maxKmhSinceLog = 0f
+        }
         _speedKmh.value = kmh
         if (!settings.overspeedEnabled) { if (alerting) clearAlert(); return }
 

@@ -12,9 +12,10 @@ import com.navigator.app.settings.AppSettings
 /**
  * Starts BccuConnectionService automatically whenever the bike's Bluetooth
  * connects (ACL_CONNECTED for the previously-bonded MAC address saved during
- * pairing), when Bluetooth is turned back on, and on boot in case the bike is
- * already in range. This is what makes the app "just work" without the rider
- * ever opening it.
+ * pairing). On boot and when Bluetooth turns back on it arms [BikeWakeScan]
+ * instead, so the service (and its notification) only appears once the bike
+ * is actually powered. This is what makes the app "just work" without the
+ * rider ever opening it.
  *
  * Note it deliberately does NOT stop the service on ACL_DISCONNECTED: the
  * service owns its own auto-reconnect (connectGatt(autoConnect=true)), and
@@ -38,15 +39,15 @@ class AutoConnectReceiver : BroadcastReceiver() {
             BluetoothAdapter.ACTION_STATE_CHANGED -> {
                 val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
                 if (state == BluetoothAdapter.STATE_ON) {
-                    val savedAddress = AppSettings(context).bondedDeviceAddress ?: return
-                    AppLogger.log("AutoConnect", "Bluetooth turned on - starting service for $savedAddress")
-                    BccuConnectionService.start(context, savedAddress)
+                    if (AppSettings(context).bondedDeviceAddress == null || BccuConnectionService.isRunning) return
+                    AppLogger.log("AutoConnect", "Bluetooth turned on - arming wake scan")
+                    BikeWakeScan.arm(context)
                 }
             }
             Intent.ACTION_BOOT_COMPLETED -> {
-                val savedAddress = AppSettings(context).bondedDeviceAddress ?: return
-                AppLogger.log("AutoConnect", "Boot completed, starting service for $savedAddress")
-                BccuConnectionService.start(context, savedAddress)
+                if (AppSettings(context).bondedDeviceAddress == null) return
+                AppLogger.log("AutoConnect", "Boot completed - arming wake scan")
+                BikeWakeScan.arm(context)
             }
         }
     }

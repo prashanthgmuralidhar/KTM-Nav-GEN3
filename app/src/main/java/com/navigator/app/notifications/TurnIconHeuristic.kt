@@ -1,6 +1,5 @@
 package com.navigator.app.notifications
 
-import android.app.Notification
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -30,7 +29,8 @@ import com.navigator.app.logging.AppLogger
  */
 object TurnIconHeuristic {
 
-    private const val SAMPLE_SIZE = 48
+    // Matches the classifier's 96x96 input so it never sees an upscaled, blurred icon.
+    private const val SAMPLE_SIZE = 96
 
     // Severity bands, calibrated from real Google Maps arrows on hardware
     // (2026-07-06 logs): a straight arrow measured a full-height left/right ink
@@ -56,16 +56,24 @@ object TurnIconHeuristic {
     // and below a real 90-degree turn's ~2.05, so neither is reclassified.
     private const val STRAIGHT_TOP_MAX = 1.35
 
-    fun guessDirection(context: Context, sbn: StatusBarNotification): BccuProtocol.TurnIcon? {
-        parseManeuverFromText(collectText(sbn))?.let {
+    /**
+     * [instruction] is only the maneuver line (e.g. "Turn left onto 1st Main Rd"),
+     * never the ETA/subtext: Maps' "Arrive 8:15 pm" subtext otherwise reads as
+     * an arrival and turns every maneuver into the destination flag.
+     */
+    fun guessDirection(context: Context, sbn: StatusBarNotification, instruction: String?): BccuProtocol.TurnIcon? {
+        val bitmap = loadIconBitmap(context, sbn)
+
+        // 1. User's manual calibration (exact per-bitmap override) wins. Also
+        //    saves unseen icons so the calibration screen can list them.
+        bitmap?.let { IconHashCache.lookup(it, context) }?.let { return it }
+
+        parseManeuverFromText(instruction.orEmpty().lowercase())?.let {
             AppLogger.log("TurnIcon", "Maneuver from text -> ${it.name}")
             return it
         }
 
-        val bitmap = loadIconBitmap(context, sbn) ?: return null
-
-        // 1. User's manual calibration (exact per-bitmap override) wins.
-        IconHashCache.lookup(bitmap, context)?.let { return it }
+        if (bitmap == null) return null
 
         // 2. On-device TFLite classifier (ported from the KTM Gen-3 companion
         //    app). Purpose-trained on nav maneuver icons, so it recognises the
@@ -111,35 +119,30 @@ object TurnIconHeuristic {
         return hi.toDouble() / lo.coerceAtLeast(1)
     }
 
-    /** Gather every text field a nav app might carry the maneuver phrase in. */
-    private fun collectText(sbn: StatusBarNotification): String {
-        val e = sbn.notification.extras
-        val keys = listOf(
-            Notification.EXTRA_TITLE, Notification.EXTRA_TEXT, Notification.EXTRA_BIG_TEXT,
-            Notification.EXTRA_SUB_TEXT, Notification.EXTRA_INFO_TEXT, Notification.EXTRA_SUMMARY_TEXT,
-        )
-        val sb = StringBuilder()
-        for (k in keys) {
-            e.getCharSequence(k)?.let { sb.append(' ').append(it) }
-        }
-        sbn.notification.tickerText?.let { sb.append(' ').append(it) }
-        return sb.toString().lowercase()
-    }
+    // Where the maneuver phrase ends and the road name begins, so a road called
+    // "Right Bank Rd" or "Destination Mall" can't steer the icon.
+    private val ROAD_START = Regex("""\s(onto|toward|towards|on|into|to|at)\s""")
 
     /**
      * Map an instruction string to an icon. Order matters - the most specific
      * phrases (sharp/slight/u-turn/roundabout/keep) are checked before the
      * generic "turn left/right", so a "sharp left" isn't swallowed by "left".
-     * Returns null when no maneuver word is present (falls through to bitmap).
+     * Matches whole words of the maneuver phrase only. Returns null when no
+     * maneuver word is present (falls through to bitmap).
      */
-    private fun parseManeuverFromText(t: String): BccuProtocol.TurnIcon? {
-        if (t.isBlank()) return null
-        val left = t.contains("left")
-        val right = t.contains("right")
+    internal fun parseManeuverFromText(full: String): BccuProtocol.TurnIcon? {
+        if (full.isBlank()) return null
+        // Roundabout exits ("take the 2nd exit onto X") sit before the road
+        // name too, but "at the roundabout, take..." starts with a cut word.
+        val roundabout = Regex("""\b(roundabout|rotary)\b""").containsMatchIn(full)
+        val t = if (roundabout) full else ROAD_START.find(full)?.let { full.substring(0, it.range.first) } ?: full
+        fun has(vararg words: String) = words.any { Regex("""\b${Regex.escape(it)}\b""").containsMatchIn(t) }
+        val left = has("left")
+        val right = has("right")
 
         // Roundabouts: "roundabout" / "rotary" + an exit ordinal.
-        if (t.contains("roundabout") || t.contains("rotary")) {
-            val exit = roundaboutExit(t)
+        if (roundabout) {
+            val exit = roundaboutExit(full)
             if (exit != null) {
                 val idx = exit.coerceIn(1, 16)
                 return BccuProtocol.TurnIcon.entries.first { it.name == "RAB_SECT_${idx}_RH" }
@@ -148,39 +151,39 @@ object TurnIconHeuristic {
         }
 
         // U-turn.
-        if (t.contains("u-turn") || t.contains("u turn") || t.contains("uturn") || t.contains("make a u")) {
+        if (has("u-turn", "u turn", "uturn", "make a u")) {
             return if (right) BccuProtocol.TurnIcon.UTURN_RIGHT else BccuProtocol.TurnIcon.UTURN_LEFT
         }
 
         // Sharp / hard.
-        if ((t.contains("sharp") || t.contains("hard")) && (left || right)) {
+        if (has("sharp", "hard") && (left || right)) {
             return if (left) BccuProtocol.TurnIcon.HEAVY_LEFT else BccuProtocol.TurnIcon.HEAVY_RIGHT
         }
         // Slight / soft / bear.
-        if ((t.contains("slight") || t.contains("soft") || t.contains("bear")) && (left || right)) {
+        if (has("slight", "soft", "bear") && (left || right)) {
             return if (left) BccuProtocol.TurnIcon.LIGHT_LEFT else BccuProtocol.TurnIcon.LIGHT_RIGHT
         }
         // Keep / stay in lane.
-        if ((t.contains("keep") || t.contains("stay")) && (left || right)) {
+        if (has("keep", "stay") && (left || right)) {
             return if (left) BccuProtocol.TurnIcon.KEEP_LEFT else BccuProtocol.TurnIcon.KEEP_RIGHT
         }
         // Merge onto a highway.
-        if (t.contains("merge")) {
+        if (has("merge")) {
             return if (left) BccuProtocol.TurnIcon.ENTER_HIGHWAY_LEFT_LANE else BccuProtocol.TurnIcon.ENTER_HIGHWAY_RIGHT_LANE
         }
         // Take a motorway exit / off-ramp.
-        if ((t.contains("exit") || t.contains("ramp") || t.contains("off-ramp")) && (left || right)) {
+        if (has("exit", "ramp", "off-ramp") && (left || right)) {
             return if (left) BccuProtocol.TurnIcon.LEAVE_HIGHWAY_LEFT_LANE else BccuProtocol.TurnIcon.LEAVE_HIGHWAY_RIGHT_LANE
         }
-        // Arrival / departure.
-        if (t.contains("destination") || t.contains("arrive") || t.contains("you have arrived")) {
+        // Arrival ("Destination will be on the right", "You have arrived").
+        if (has("destination", "arrive", "arrived", "arriving")) {
             return BccuProtocol.TurnIcon.END
         }
         // Plain turn: this is a normal ~90° turn, so QUITE_* (not LIGHT_*).
-        if (t.contains("turn left") || (left && t.contains("turn"))) return BccuProtocol.TurnIcon.QUITE_LEFT
-        if (t.contains("turn right") || (right && t.contains("turn"))) return BccuProtocol.TurnIcon.QUITE_RIGHT
+        if (left && has("turn")) return BccuProtocol.TurnIcon.QUITE_LEFT
+        if (right && has("turn")) return BccuProtocol.TurnIcon.QUITE_RIGHT
         // Straight / continue / head.
-        if (t.contains("straight") || t.contains("continue") || t.contains("head ") || t.contains("proceed")) {
+        if (has("straight", "continue", "head", "proceed")) {
             return BccuProtocol.TurnIcon.GO_STRAIGHT
         }
         // A bare directional word with no other maneuver context - treat as a turn.
